@@ -26,7 +26,9 @@ tx_short_apdu(fido_dev_t *d, const iso7816_header_t *h, const uint8_t *payload,
 	uint8_t sw[2];
 	size_t apdu_len;
 	int ok = -1;
+	bool retry = false;
 
+retry:
 	memset(&apdu, 0, sizeof(apdu));
 	apdu[0] = h->cla | cla_flags;
 	apdu[1] = h->ins;
@@ -35,6 +37,11 @@ tx_short_apdu(fido_dev_t *d, const iso7816_header_t *h, const uint8_t *payload,
 	apdu[4] = payload_len;
 	memcpy(&apdu[5], payload, payload_len);
 	apdu_len = (size_t)(5 + payload_len + 1);
+	if (retry) {
+		apdu[5 + payload_len] = sw[1];
+	}
+
+	fido_log_debug("%s: payload length %0u, with header %lu", __func__, payload_len, apdu_len);
 
 	if (d->io.write(d->io_handle, apdu, apdu_len) < 0) {
 		fido_log_debug("%s: write", __func__);
@@ -45,6 +52,13 @@ tx_short_apdu(fido_dev_t *d, const iso7816_header_t *h, const uint8_t *payload,
 		if (d->io.read(d->io_handle, sw, sizeof(sw), -1) != 2) {
 			fido_log_debug("%s: read", __func__);
 			goto fail;
+		}
+		if (sw[0] == 0x6C) {
+			/* Spec: If SW1 is set to '6C', then the process is aborted and before issuing any other command, the same command may be re-issued using SW2 (exact number of available data bytes) as short Le field. */
+			fido_log_debug("%s: retrying with length %02x", __func__, sw[1]);
+			payload_len = sw[1];
+			retry = true;
+			goto retry;
 		}
 		if ((sw[0] << 8 | sw[1]) != SW_NO_ERROR) {
 			fido_log_debug("%s: unexpected sw", __func__);
